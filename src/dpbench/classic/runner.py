@@ -12,9 +12,11 @@ the right type (:func:`generic_queries`), so that the databases can be compared.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -22,7 +24,7 @@ import pandas as pd
 
 from dpbench.classic.queries import Query
 from dpbench.classic.tables import Table
-from dpbench.core.registry import QUERIES, QUERY_MECHANISMS, TABLES
+from dpbench.core.registry import QUERIES, QUERY_MECHANISMS, TABLES, load_plugins
 from dpbench.core.seeding import derive_seed
 
 #: ``queries: auto``: the generic set of queries of :func:`generic_queries`, built for every table.
@@ -54,11 +56,36 @@ class ClassicConfig:
     repetitions: int = 30
     seed: int = 0
     description: str = ""
+    plugins: list[str] = field(default_factory=list)
+    output_dir: str = "runs"
+
+    @property
+    def slug(self) -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "-", self.name).strip("-") or "classic"
 
     @property
     def table(self) -> Spec:
         """The first table (the only one of most benchmarks)."""
         return self.tables[0]
+
+    def to_dict(self) -> dict[str, Any]:
+        def spec(s: Spec) -> dict[str, Any]:
+            return {"name": s.name, "label": s.label, "params": dict(s.params)}
+
+        return {
+            "kind": "classic",
+            "name": self.name,
+            "description": self.description,
+            "tables": [spec(t) for t in self.tables],
+            "queries": self.queries if self.queries == AUTO else [spec(q) for q in self.queries],
+            "mechanisms": [spec(m) for m in self.mechanisms],
+            "epsilons": list(self.epsilons),
+            "delta": self.delta,
+            "repetitions": self.repetitions,
+            "seed": self.seed,
+            "plugins": list(self.plugins),
+            "output_dir": self.output_dir,
+        }
 
 
 def generic_queries(table: Table) -> list[Spec]:
@@ -109,6 +136,7 @@ class ClassicResult:
     skipped: list[str]
     #: ``Table.summary()`` of every table.
     tables: list[dict[str, Any]]
+    directory: Path | None = None
 
 
 def _summarize(results: pd.DataFrame) -> pd.DataFrame:
@@ -141,6 +169,7 @@ def run_query_benchmark(
 
     ``tables`` (already loaded) replace the tables of the configuration.
     """
+    load_plugins(config.plugins)
     if tables is None:
         tables = load_tables(config)
     elif isinstance(tables, Table):

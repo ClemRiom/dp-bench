@@ -1,15 +1,17 @@
 """Tables: the databases that the classic-DP queries are asked on.
 
 A table is a pandas data frame plus its :class:`~dpbench.core.schema.TableSchema` (the
-public domain of every column). Built-in tables: a large synthetic census
-(20,000 people) and the small Diabetes study (442 patients) to see what DP costs on a
-small database.
+public domain of every column). Built-in tables: the real Adult census records, a large
+synthetic census, and the small Diabetes study (442 patients) to see what DP costs on a
+small database. Tables uploaded in the dashboard are registered by
+:mod:`dpbench.workspace`.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -62,6 +64,29 @@ class TableLoader(ABC):
     @abstractmethod
     def load(self) -> Table:
         """The whole table."""
+
+
+@register_table("adult")
+class AdultTable(TableLoader):
+    """UCI Adult census: 45,222 real records (age, education, occupation, hours per week, income...), documented domains."""
+
+    def load(self) -> Table:
+        from dpbench.datasets.adult import CATEGORIES, NUMERIC, read_adult
+
+        frame = read_adult().dropna().reset_index(drop=True)
+        columns = {name: ColumnSpec(name, "numeric", lower=low, upper=high) for name, (low, high, _) in NUMERIC.items()}
+        for name, categories in CATEGORIES.items():
+            columns[name] = ColumnSpec(name, "categorical", categories=list(categories))
+        columns["income"] = ColumnSpec("income", "categorical", categories=["<=50K", ">50K"])
+        frame = frame[list(columns)]
+        schema = TableSchema(columns, target="income", sensitive_attribute="sex", notes=["Domains of adult.names."])
+        return Table(
+            "adult",
+            frame,
+            schema,
+            "UCI Adult census income (records with missing values removed)",
+            "UCI Machine Learning Repository (Becker & Kohavi, 1996)",
+        )
 
 
 REGIONS = ["North", "North-East", "East", "South-East", "South", "South-West", "West", "Centre"]
@@ -147,3 +172,30 @@ class DiabetesTable(TableLoader):
             "Diabetes study (Efron et al. 2004): 442 patients",
             "scikit-learn load_diabetes",
         )
+
+
+class UploadedTable(TableLoader):
+    """A table uploaded in the dashboard (a CSV file and its schema in the workspace)."""
+
+    csv_path: ClassVar[Path]
+    schema_data: ClassVar[dict[str, Any]]
+    description: ClassVar[str] = ""
+
+    def load(self) -> Table:
+        frame = pd.read_csv(self.csv_path)
+        schema = TableSchema.from_dict(self.schema_data)
+        keep = [c for c in schema.columns if schema.columns[c].kind != "ignored"]
+        return Table(self.name, frame[keep], schema, self.description, f"uploaded file {self.csv_path.name}")
+
+
+def register_uploaded_table(name: str, csv_path: Path, schema: dict[str, Any], description: str = "") -> type:
+    """Register (or replace) the table plugin of an uploaded file."""
+    cls = type(
+        f"Uploaded_{name}",
+        (UploadedTable,),
+        {"csv_path": Path(csv_path), "schema_data": schema, "description": description, "__doc__": description},
+    )
+    from dpbench.core.registry import TABLES
+
+    TABLES.unregister(name)
+    return register_table(name)(cls)

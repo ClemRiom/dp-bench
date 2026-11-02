@@ -14,7 +14,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from dpbench.reporting.figures import style
-from dpbench.reporting.style import PALETTE, eps_text
+from dpbench.reporting.style import PALETTE
 
 METRIC_LABELS = {
     "abs_error": "Absolute error",
@@ -154,17 +154,6 @@ def error_heatmap(summary: pd.DataFrame, epsilon: float, metric: str = "rel_erro
     fig.update_layout(margin=dict(l=210, r=24, t=24, b=120))
     fig.update_xaxes(showline=False, ticks="", tickangle=-30, showgrid=False, side="bottom")
     fig.update_yaxes(showline=False, ticks="", autorange="reversed", showgrid=False)
-    fig.add_annotation(
-        text=f"mean {METRIC_LABELS.get(metric, metric).lower()} at ε = {eps_text(epsilon)} · bold = best of the row · "
-        "darker = 10×, 100× larger than the best",
-        xref="paper",
-        yref="paper",
-        x=0,
-        y=1.0,
-        yanchor="bottom",
-        showarrow=False,
-        font=dict(size=12, color="#5d5d5a"),
-    )
     return fig
 
 

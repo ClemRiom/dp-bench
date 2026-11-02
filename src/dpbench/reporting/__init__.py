@@ -1,1 +1,1 @@
-"""Figures (Plotly) of the benchmarks."""
+"""Figures (Plotly), tables and the self-contained HTML report."""

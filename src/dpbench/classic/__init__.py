@@ -4,8 +4,8 @@ Importing this package registers the built-in tables, queries and mechanisms. Th
 benchmark itself is in :mod:`dpbench.classic.runner`.
 """
 
-from dpbench.classic import mechanisms, queries, tables  # noqa: F401
-from dpbench.classic.mechanisms import QueryMechanism
+from dpbench.classic import external, mechanisms, queries, tables  # noqa: F401
+from dpbench.classic.mechanisms import QueryMechanism, noise_mechanism, numeric_view
 from dpbench.classic.queries import Query
 from dpbench.classic.tables import Table, TableLoader
 from dpbench.classic.tasks import NumericTask, QuantileTask, SelectionTask, WorkloadTask
@@ -19,4 +19,6 @@ __all__ = [
     "Table",
     "TableLoader",
     "WorkloadTask",
+    "noise_mechanism",
+    "numeric_view",
 ]

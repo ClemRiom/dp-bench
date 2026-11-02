@@ -11,6 +11,7 @@ The results are shown below the tabs (they stay until the next benchmark).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -33,7 +34,7 @@ from dpbench.reporting import classic_figures
 
 EPSILONS = [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
 METRICS = {"rel_error": "Relative error", "abs_error": "Absolute error"}
-COMPARISON_TABLES = ("census_synthetic", "diabetes")
+COMPARISON_TABLES = ("census_synthetic", "diabetes", "adult")
 
 
 def _title(registry, name: str) -> str:
@@ -41,8 +42,14 @@ def _title(registry, name: str) -> str:
 
 
 @st.cache_data(show_spinner="Loading the table...", max_entries=8)
-def _load_table(name: str) -> Table:
+def _load_table(name: str, signature: tuple[Any, ...]) -> Table:
     return TABLES.get(name)().load()
+
+
+def _signature(name: str) -> tuple[Any, ...]:
+    """Changes when an uploaded table's file changes (built-in tables never change)."""
+    path = getattr(TABLES.get(name), "csv_path", None)
+    return (name, Path(path).stat().st_mtime) if path is not None and Path(path).exists() else (name,)
 
 
 def default_queries(table: Table) -> list[dict[str, Any]]:
@@ -66,21 +73,19 @@ def _table_section() -> Table | None:
         format_func=lambda n: f"{n} — {(TABLES.get(n).__doc__ or '').strip().splitlines()[0][:90]}",
     )
     try:
-        table = _load_table(name)
+        table = _load_table(name, _signature(name))
     except Exception as error:
         st.error(f"Cannot load the table {name!r}: {error}")
         return None
-    st.caption(
-        f"**{table.n:,} records** · {len(table.numeric_columns())} numeric and {len(table.categorical_columns())} "
-        f"categorical columns · {table.description}"
+    st.markdown(
+        f"{table.n:,} records, {len(table.numeric_columns())} numeric and {len(table.categorical_columns())} "
+        f"categorical columns. {table.description}."
     )
     if table.schema.bounds_from_data:
         st.warning(
             "The domains of "
             + ", ".join(f"`{c}`" for c in table.schema.bounds_from_data)
-            + " were computed from the data. Differential privacy assumes public domains: in a real deployment "
-            "they must come from documentation or domain knowledge.",
-            icon=":material/warning:",
+            + " were computed from the data when the file was uploaded, not fixed in advance.",
         )
     with st.expander("Columns and their public domains"):
         rows = []
@@ -101,9 +106,7 @@ def _table_section() -> Table | None:
 def _query_form(table: Table) -> dict[str, Any] | None:
     """Form to add one query; returns its spec when the button is pressed."""
     names = QUERIES.names()
-    c1, c2 = st.columns([1, 2])
-    kind = c1.selectbox("Query type", names, format_func=lambda n: _title(QUERIES, n), key="new_query_type")
-    c2.caption((QUERIES.get(kind).__doc__ or "").strip().split("\n\n")[0])
+    kind = st.selectbox("Query type", names, format_func=lambda n: _title(QUERIES, n), key="new_query_type")
     numeric, categorical = table.numeric_columns(), table.categorical_columns()
     accepted = QUERIES.get(kind).column_kinds
     columns = [c for c in table.schema.columns if table.column(c).kind in accepted]
@@ -151,7 +154,7 @@ def _query_form(table: Table) -> dict[str, Any] | None:
             if params["kind"] == "random":
                 params["n_queries"] = int(c4.number_input("Number of ranges", 1, 5000, 100, key="nq_rn"))
     label = st.text_input("Label (optional)", "", key="nq_label", placeholder="e.g. Median income")
-    if st.button("Add this query", icon=":material/add:"):
+    if st.button("Add this query"):
         try:
             query = QUERIES.get(kind)(**params)
             query.tasks(table)  # validates the columns and the parameters
@@ -170,11 +173,12 @@ def _queries_section(table: Table) -> list[dict[str, Any]]:
     for i, spec in enumerate(list(queries)):
         left, middle, right = st.columns([4, 3, 1])
         left.markdown(f"**{spec['label']}**")
-        middle.caption(f"{_title(QUERIES, spec['name'])} · " + ", ".join(f"{k}={v}" for k, v in spec["params"].items()))
-        if right.button("Remove", key=f"rm_query_{table.name}_{i}", icon=":material/close:"):
+        params = ", ".join(f"{k}={v}" for k, v in spec["params"].items())
+        middle.write(f"{_title(QUERIES, spec['name'])}: {params}" if params else _title(QUERIES, spec["name"]))
+        if right.button("Remove", key=f"rm_query_{table.name}_{i}"):
             queries.pop(i)
             st.rerun()
-    with st.expander("Add a query", icon=":material/add_circle:"):
+    with st.expander("Add a query"):
         added = _query_form(table)
         if added is not None:
             labels = {q["label"] for q in queries}
@@ -182,7 +186,7 @@ def _queries_section(table: Table) -> list[dict[str, Any]]:
                 added["label"] += f" ({len(queries) + 1})"
             queries.append(added)
             st.rerun()
-    if st.button("Reset to the default queries", icon=":material/restart_alt:"):
+    if st.button("Reset to the default queries"):
         store[table.name] = default_queries(table)
         st.rerun()
     return queries
@@ -194,7 +198,7 @@ def _compatibility(queries: list[dict[str, Any]], mechanisms: list[str]) -> pd.D
         kind = QUERIES.get(spec["name"]).task_kind
         row = {"Query": spec["label"], "Kind": kind}
         for name in mechanisms:
-            row[_title(QUERY_MECHANISMS, name)] = "✓" if kind in QUERY_MECHANISMS.get(name).supports else ""
+            row[_title(QUERY_MECHANISMS, name)] = "yes" if kind in QUERY_MECHANISMS.get(name).supports else ""
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -210,7 +214,6 @@ def _budget_inputs(key: str, default_repetitions: int = 30) -> tuple[list[float]
         5,
         200,
         default_repetitions,
-        help="Each configuration is released this many times.",
         key=f"reps_{key}",
     )
     seed = int(c4.number_input("Seed", 0, 10_000, 0, key=f"seed_{key}"))
@@ -232,15 +235,13 @@ def _one_database() -> None:
     queries = _queries_section(table)
     st.markdown("#### Mechanisms and budget")
     names = QUERY_MECHANISMS.names()
-    mechanisms = st.multiselect(
-        "Mechanisms", names, default=names, format_func=lambda n: f"{_title(QUERY_MECHANISMS, n)} ({n})"
-    )
+    mechanisms = st.multiselect("Mechanisms", names, default=names, format_func=lambda n: _title(QUERY_MECHANISMS, n))
     if queries and mechanisms:
         with st.expander("Which mechanism can answer which query"):
             common.table(_compatibility(queries, mechanisms))
     epsilons, delta, repetitions, seed = _budget_inputs("one")
     usable = [q for q in queries if any(compatible(QUERIES.get(q["name"])(**q["params"]), m) for m in mechanisms)]
-    if st.button("Run the benchmark", type="primary", icon=":material/play_arrow:", disabled=not (usable and epsilons)):
+    if st.button("Run the benchmark", type="primary", disabled=not (usable and epsilons)):
         config = ClassicConfig(
             name=f"classic-{table.name}",
             description=f"{len(queries)} queries × {len(mechanisms)} mechanisms on {table.name}",
@@ -256,11 +257,6 @@ def _one_database() -> None:
 
 
 def _compare_databases() -> None:
-    st.caption(
-        "Every table gets the same types of queries — count, count with a condition, sum, mean, median, 100 range "
-        "queries, centroid, histogram, mode, 2-way marginal — on columns of the right type (chosen from the schema, "
-        "never from the data). The errors can then be compared from one database to the other."
-    )
     names = TABLES.names()
     tables = st.multiselect(
         "Databases",
@@ -272,16 +268,16 @@ def _compare_databases() -> None:
         "Mechanisms",
         QUERY_MECHANISMS.names(),
         default=[m for m in defaults if m in QUERY_MECHANISMS],
-        format_func=lambda n: f"{_title(QUERY_MECHANISMS, n)} ({n})",
+        format_func=lambda n: _title(QUERY_MECHANISMS, n),
         key="compare_mechanisms",
     )
     epsilons, delta, repetitions, seed = _budget_inputs("compare", default_repetitions=20)
     ready = bool(tables and mechanisms and epsilons)
-    if st.button("Compare the databases", type="primary", icon=":material/compare_arrows:", disabled=not ready):
+    if st.button("Compare the databases", type="primary", disabled=not ready):
         loaded = []
         for name in tables:
             try:
-                loaded.append(_load_table(name))
+                loaded.append(_load_table(name, _signature(name)))
             except Exception as error:
                 st.error(f"Cannot load the table {name!r}: {error}")
                 return
@@ -314,17 +310,12 @@ def _comparison(summary: pd.DataFrame) -> None:
     )
     metric = metric or "rel_error"
     common.plot(classic_figures.error_vs_records(summary, query, epsilon, metric), key="compare_records")
-    st.caption(
-        "One point per database, placed at its number of records. For counts, sums and histograms the noise does "
-        "not depend on the size of the database, so the relative error falls like 1/n: the same ε costs much more "
-        "accuracy on a small database."
-    )
     rows = summary[(summary["query"] == query) & (summary["epsilon"] == epsilon)]
     view = rows.pivot_table(index="mechanism", columns="table", values=f"{metric}_mean", sort=False)
     view = view[[t for t in dict.fromkeys(summary["table"]) if t in view.columns]]
     common.table(view.map(classic_figures.compact), hide_index=False)
     columns = rows.drop_duplicates("table")[["table", "records", "query_description"]]
-    st.caption("Columns used: " + "; ".join(f"{r.table}: {r.query_description}" for r in columns.itertuples()))
+    st.markdown("Columns used: " + "; ".join(f"{r.table}: {r.query_description}" for r in columns.itertuples()))
 
 
 def _details(config: ClassicConfig, result: ClassicResult, summary: pd.DataFrame, results: pd.DataFrame) -> None:
@@ -344,14 +335,6 @@ def _details(config: ClassicConfig, result: ClassicResult, summary: pd.DataFrame
     )
     metric = metric or "rel_error"
     common.plot(classic_figures.error_heatmap(summary, epsilon, metric), key="classic_heatmap")
-    st.caption(
-        "Each cell is the mean error of a mechanism on a query over the repetitions. Relative error: |error| / "
-        "|exact answer| for numbers; L1 error / total for histograms; mean error per range / number of records for "
-        "range queries; share of the records between the answer and the true value for quantiles; distance / "
-        "domain diagonal for centroids; regret / count of the mode for the mode. The colour compares the "
-        "mechanisms of a row (the best one is the lightest). A blank cell: the mechanism cannot answer this kind "
-        "of query."
-    )
     st.markdown("#### One query in detail")
     queries = list(dict.fromkeys(summary["query"]))
     query = st.selectbox("Query", queries, key="classic_query")
@@ -405,7 +388,6 @@ def _results(config: ClassicConfig, result: ClassicResult) -> None:
         "ε spent = target ε",
         "yes" if gap < 1e-9 else f"max gap {gap:.2g}",
         border=True,
-        help="Each query splits its budget between its parts (basic composition): the ε spent must equal the target.",
     )
     if len(tables) > 1:
         _comparison(summary)
@@ -424,32 +406,23 @@ def _results(config: ClassicConfig, result: ClassicResult) -> None:
             st.markdown("\n".join(f"- {s}" for s in result.skipped))
     if not failed.empty:
         keys = [c for c in ("table", "query", "mechanism", "epsilon") if c in failed]
-        with st.expander(
-            f"{failed[keys].drop_duplicates().shape[0]} skipped or failed configurations", icon=":material/error:"
-        ):
+        with st.expander(f"{failed[keys].drop_duplicates().shape[0]} skipped or failed configurations"):
             common.table(failed[[*keys, "status", "error"]].drop_duplicates(keys))
     left, middle = st.columns(2)
     left.download_button(
         "Download the summary (CSV)",
         summary.to_csv(index=False),
         file_name="classic_summary.csv",
-        icon=":material/download:",
     )
     middle.download_button(
         "Download every release (CSV)",
         results.to_csv(index=False),
         file_name="classic_results.csv",
-        icon=":material/download:",
     )
 
 
 def render() -> None:
-    st.title("Classic DP: queries on databases")
-    st.caption(
-        "Statistical queries (counts, sums, means, histograms, quantiles, range queries...) answered with the "
-        "classic DP mechanisms. Every compatible (query, mechanism) pair is released many times for each ε; the "
-        "error is averaged over the repetitions. Neighbouring databases differ by one record (added or removed)."
-    )
+    st.title("Queries on databases")
     one, many = st.tabs(["One database", "Compare databases"])
     with one:
         _one_database()
@@ -461,5 +434,5 @@ def render() -> None:
         st.subheader("Results")
         config: ClassicConfig = state["config"]
         names = ", ".join(t.name for t in config.tables)
-        st.caption(f"{names} · ε ∈ {config.epsilons} · δ = {config.delta:g} · {config.repetitions} repetitions")
+        st.markdown(f"{names}, ε ∈ {config.epsilons}, δ = {config.delta:g}, {config.repetitions} repetitions.")
         _results(config, state["result"])
