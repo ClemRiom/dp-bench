@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+.DS_Store
+
+# experiment outputs (reference results live in results/)
+runs/
+
+# reports embed plotly.js (5 MB each); rebuild them with `dpbench report results/<name>`
+results/*/report.html
